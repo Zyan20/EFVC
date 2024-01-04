@@ -1,7 +1,7 @@
 import math
 import torch
 from torch import mv, nn
-from sub_net.video_net import ME_Spynet, GDN, flow_warp, ResBlock, bilineardownsacling
+from .sub_net.video_net import ME_Spynet, GDN, flow_warp, ResBlock, bilineardownsacling
 from compressai.layers import subpel_conv3x3
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 
@@ -250,7 +250,7 @@ class EFVC(nn.Module):
         
         self.entropy_coder = None
         self.bit_estimator_z = EntropyBottleneck(self.channel_N)
-        self.bit_estimator_mv = EntropyBottleneck(self.channel_N)
+        self.bit_estimator_z_mv = EntropyBottleneck(self.channel_N)
         self.gaussian_encoder = GaussianConditional(None)
 
 
@@ -279,7 +279,7 @@ class EFVC(nn.Module):
         est_mv = self.optic_flow(input_frame, ref_frame)
         mv_y = self.mv_encoder(est_mv)
         mv_z = self.mv_prior_encoder(mv_y)
-        mv_z_hat, mv_z_likelihood = self.bit_estimator_mv(mv_z)
+        mv_z_hat, mv_z_likelihood = self.bit_estimator_z_mv(mv_z)
         mv_params = self.mv_prior_decoder(mv_z_hat)
         mv_scales_hat, mv_means_hat = mv_params.chunk(2, 1)
 
