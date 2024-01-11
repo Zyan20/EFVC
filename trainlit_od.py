@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import lightning as L
 
-from src.model import EFVC
+from src.model_OD import EFVC_OD
 
 from util.dataset.Vimeo90K import Vimeo90K
 
@@ -23,7 +23,7 @@ class DCVC_TCM_Lit(L.LightningModule):
         self.cfg = cfg
         self._parse_cfg()
 
-        self.model = EFVC()
+        self.model = EFVC_OD()
         self.model.apply(self._init_weights)
         self.model.optic_flow._load_Spynet(self.flow_pretrain_dir)
 

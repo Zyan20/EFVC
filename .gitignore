@@ -1,0 +1,6 @@
+lightning_logs/
+log/
+experiments/
+__pycache__
+
+!experiments/copy.py
