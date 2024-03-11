@@ -323,5 +323,13 @@ class EFVC(nn.Module):
 
             "recon_image": recon_image,
             "feature": feature,
-            "warpped_image": warp_frame
+            "warpped_image": warp_frame,
+
+            "y": y,
+            "z": z,
+            "y_likeli": y_likelihood,
+
+            "mv_y": mv_y,
+            "mv_z": mv_z,
+            "mv_y_likeli": mv_y_likelihood,
         }

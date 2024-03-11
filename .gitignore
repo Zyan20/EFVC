@@ -4,3 +4,5 @@ experiments/
 __pycache__
 
 !experiments/copy.py
+lightning_logs/
+.vscode

@@ -1,13 +1,14 @@
 import sys
 sys.path.append("../")
 
-import json, os, math
+import yaml, os, math
 
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import lightning as L
+from lightning.pytorch.loggers import TensorBoardLogger
 
 from src.model import EFVC
 
@@ -88,9 +89,6 @@ class DCVC_TCM_Lit(L.LightningModule):
             self.sum_out["ME_PSNR"]  += out["ME_PSNR"]
             self.sum_out["loss"]     += loss.item()
 
-            # print(self.sum_out)
-
-
         # average loss
         loss = loss / (T - 1)
 
@@ -149,16 +147,16 @@ class DCVC_TCM_Lit(L.LightningModule):
         opt = optim.AdamW(self.parameters(), lr = self.base_lr)
 
         if self.multi_frame_training:
-            milestones = [3, 6, 9]
+            milestones = self.lr_milestones_multi
         
         else:
-            milestones = [self.stage_milestones[-1] + 5, self.stage_milestones[-1] + 10]
+            milestones = self.lr_milestones
 
 
         scheduler = optim.lr_scheduler.MultiStepLR(
             optimizer = opt,
             milestones = milestones,
-            gamma = 0.1
+            gamma = self.lr_gamma
         )
 
         return [opt], [scheduler]
@@ -226,10 +224,15 @@ class DCVC_TCM_Lit(L.LightningModule):
 
         self.stage_milestones = self.cfg["training"]["stage_milestones"]
         self.base_lr = self.cfg["training"]["base_lr"]
-        self.aux_lr = self.cfg["training"]["aux_lr"]
+
         self.flow_pretrain_dir = self.cfg["training"]["flow_pretrain_dir"]
+
         self.train_lambda = self.cfg["training"]["train_lambda"]
         self.multi_frame_training = self.cfg["training"]["multi_frame_training"]
+
+        self.lr_milestones_multi = self.cfg["training"]["lr_milestones_multi"]
+        self.lr_milestones = self.cfg["training"]["lr_milestones"]
+        self.lr_gamma = self.cfg["training"]["lr_gamma"]
 
 
     def _freeze_mv(self):
@@ -258,6 +261,9 @@ class DCVC_TCM_Lit(L.LightningModule):
             nn.init.constant_(m.bias, 0)
 
     def _save_model(self, folder = "log/model_ckpt", name = None):
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+
         if name == None:
             name = "model_ep{}_st{}.pth".format(self.current_epoch, self.global_step)
 
@@ -274,16 +280,10 @@ def mse2psnr(mse):
 if __name__ == "__main__":
     L.seed_everything(3407)
 
-    with open("config.json") as f:
-        config = json.load(f)
-
-    # with open("config_finetune.json") as f:
-    #     config = json.load(f)
+    with open("config.yaml") as f:
+        config = yaml.safe_load(f)
 
     model_module = DCVC_TCM_Lit(config)
-    # model_module.model.load_state_dict(torch.load("log/512/model_epoch58_step710747.pth"))
-    # model_module = DCVC_TCM_Lit.load_from_checkpoint("lightning_logs/version_2/checkpoints/epoch=18-step=153463.ckpt", cfg = config)
-    # model_module.model.load_state_dict(torch.load("log/512/model_epoch14_step242295.pth"))
 
     if config["training"]["multi_frame_training"]:
         frame_num = 5
@@ -296,24 +296,33 @@ if __name__ == "__main__":
         batch_size = config["training"]["batch_size"]
 
     train_dataset = Vimeo90K(
-        root = config["datasets"]["viemo90k"]["root"], 
-        split_file= config["datasets"]["viemo90k"]["split_file"],
+        root = config["datasets"]["vimeo90k"]["root"], 
+        split_file= config["datasets"]["vimeo90k"]["split_file"],
         frame_num = frame_num, interval = interval, rnd_frame_group = True
     )
     train_dataloader = DataLoader(
         train_dataset, batch_size = batch_size, shuffle = True, 
-        num_workers = 4, persistent_workers=True, pin_memory = True
+        num_workers = 1, persistent_workers=True, pin_memory = True
     )
 
+    logger = TensorBoardLogger(save_dir = "log", name = config["name"])
     trainer = L.Trainer(
         # devices=2, strategy="ddp_find_unused_parameters_true",
         max_epochs = 60,
+        logger = logger,
         # fast_dev_run = True,
     )
 
-    trainer.fit(
-        model = model_module,
-        train_dataloaders = train_dataloader,
-        ckpt_path = "lightning_logs/version_1/checkpoints/epoch=4-step=40385.ckpt"
-    )
+    if config["training"]["resume"]:
+        trainer.fit(
+            model = model_module,
+            train_dataloaders = train_dataloader,
+            ckpt_path = config["training"]["ckpt"]
+        )
     
+    else:
+        trainer.fit(
+            model = model_module,
+            train_dataloaders = train_dataloader,
+        )
+
