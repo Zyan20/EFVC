@@ -5,16 +5,24 @@ from .sub_net.video_net import ME_Spynet, GDN, flow_warp, ResBlock, bilineardown
 from compressai.layers import subpel_conv3x3
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 
+from .layers.ResBlock import InvertedResidual
+
+
+def ResAct(channel, layers = 3):
+    return nn.Sequential(
+        *[InvertedResidual(channel) for _ in range(layers)]
+    )
+
 
 class FeatureExtractor(nn.Module):
-    def __init__(self, channel=64):
+    def __init__(self, channel = 64):
         super().__init__()
         self.conv1 = nn.Conv2d(channel, channel, 3, stride=1, padding=1)
-        self.res_block1 = ResBlock(channel)
+        self.res_block1 = InvertedResidual(channel)
         self.conv2 = nn.Conv2d(channel, channel, 3, stride=2, padding=1)
-        self.res_block2 = ResBlock(channel)
+        self.res_block2 = InvertedResidual(channel)
         self.conv3 = nn.Conv2d(channel, channel, 3, stride=2, padding=1)
-        self.res_block3 = ResBlock(channel)
+        self.res_block3 = InvertedResidual(channel)
 
     def forward(self, feature):
         layer1 = self.conv1(feature)
@@ -30,18 +38,18 @@ class FeatureExtractor(nn.Module):
 
 
 class MultiScaleContextFusion(nn.Module):
-    def __init__(self, channel_in=64, channel_out=64):
+    def __init__(self, channel_in = 64, channel_out = 64):
         super().__init__()
         self.conv3_up = subpel_conv3x3(channel_in, channel_out, 2)
-        self.res_block3_up = ResBlock(channel_out)
-        self.conv3_out = nn.Conv2d(channel_out, channel_out, 3, padding=1)
-        self.res_block3_out = ResBlock(channel_out)
+        self.res_block3_up = InvertedResidual(channel_out)
+        self.conv3_out = nn.Conv2d(channel_out, channel_out, 3, padding = 1)
+        self.res_block3_out = InvertedResidual(channel_out)
         self.conv2_up = subpel_conv3x3(channel_out * 2, channel_out, 2)
-        self.res_block2_up = ResBlock(channel_out)
-        self.conv2_out = nn.Conv2d(channel_out * 2, channel_out, 3, padding=1)
-        self.res_block2_out = ResBlock(channel_out)
-        self.conv1_out = nn.Conv2d(channel_out * 2, channel_out, 3, padding=1)
-        self.res_block1_out = ResBlock(channel_out)
+        self.res_block2_up = InvertedResidual(channel_out)
+        self.conv2_out = nn.Conv2d(channel_out * 2, channel_out, 3, padding = 1)
+        self.res_block2_out = InvertedResidual(channel_out)
+        self.conv1_out = nn.Conv2d(channel_out * 2, channel_out, 3, padding = 1)
+        self.res_block1_out = InvertedResidual(channel_out)
 
     def forward(self, context1, context2, context3):
         context3_up = self.conv3_up(context3)
@@ -64,15 +72,15 @@ class ContextualEncoder(nn.Module):
     def __init__(self, channel_N=64, channel_M=96):
         super().__init__()
         self.conv1 = nn.Conv2d(channel_N + 3, channel_N, 3, stride=2, padding=1)
-        self.gdn1 = GDN(channel_N)
-        self.res1 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
-                             start_from_relu=False, end_with_relu=True)
+        self.gdn1 = ResAct(channel_N)
+        self.res1 = InvertedResidual(channel_N * 2)
+        
         self.conv2 = nn.Conv2d(channel_N * 2, channel_N, 3, stride=2, padding=1)
-        self.gdn2 = GDN(channel_N)
-        self.res2 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
-                             start_from_relu=False, end_with_relu=True)
+        self.gdn2 = ResAct(channel_N)
+        self.res2 = InvertedResidual(channel_N * 2)
+        
         self.conv3 = nn.Conv2d(channel_N * 2, channel_N, 3, stride=2, padding=1)
-        self.gdn3 = GDN(channel_N)
+        self.gdn3 = ResAct(channel_N)
         self.conv4 = nn.Conv2d(channel_N, channel_M, 3, stride=2, padding=1)
 
     def forward(self, x, context1, context2, context3):
@@ -92,15 +100,16 @@ class ContextualDecoder(nn.Module):
     def __init__(self, channel_N=64, channel_M=96):
         super().__init__()
         self.up1 = subpel_conv3x3(channel_M, channel_N, 2)
-        self.gdn1 = GDN(channel_N, inverse=True)
+        self.gdn1 = ResAct(channel_N)
+
         self.up2 = subpel_conv3x3(channel_N, channel_N, 2)
-        self.gdn2 = GDN(channel_N, inverse=True)
-        self.res1 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
-                             start_from_relu=False, end_with_relu=True)
+        self.gdn2 = ResAct(channel_N)
+        self.res1 = InvertedResidual(channel_N * 2)
+                             
         self.up3 = subpel_conv3x3(channel_N * 2, channel_N, 2)
-        self.gdn3 = GDN(channel_N, inverse=True)
-        self.res2 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
-                             start_from_relu=False, end_with_relu=True)
+        self.gdn3 = ResAct(channel_N)
+        self.res2 = InvertedResidual(channel_N * 2)
+
         self.up4 = subpel_conv3x3(channel_N * 2, 32, 2)
 
     def forward(self, x, context2, context3):
@@ -117,14 +126,17 @@ class ContextualDecoder(nn.Module):
 
 
 class TemporalPriorEncoder(nn.Module):
-    def __init__(self, channel_N=64, channel_M=96):
+    def __init__(self, channel_N = 64, channel_M = 96):
         super().__init__()
         self.conv1 = nn.Conv2d(channel_N, channel_N, 3, stride=2, padding=1)
-        self.gdn1 = GDN(channel_N)
+        self.gdn1 = ResAct(channel_N)
+
         self.conv2 = nn.Conv2d(channel_N * 2, channel_M, 3, stride=2, padding=1)
-        self.gdn2 = GDN(channel_M)
+        self.gdn2 = ResAct(channel_M)
+
         self.conv3 = nn.Conv2d(channel_M + channel_N, channel_M * 3 // 2, 3, stride=2, padding=1)
-        self.gdn3 = GDN(channel_M * 3 // 2)
+        self.gdn3 = ResAct(channel_M * 3 // 2)
+
         self.conv4 = nn.Conv2d(channel_M * 3 // 2, channel_M * 2, 3, stride=2, padding=1)
 
     def forward(self, context1, context2, context3):
@@ -143,8 +155,8 @@ class ReconGeneration(nn.Module):
         super().__init__()
         self.feature_conv = nn.Sequential(
             nn.Conv2d(ctx_channel + res_channel, channel, 3, stride=1, padding=1),
-            ResBlock(channel),
-            ResBlock(channel),
+            InvertedResidual(channel, expand_ratio = 2),
+            InvertedResidual(channel, expand_ratio = 2),
         )
         self.recon_conv = nn.Conv2d(channel, 3, 3, stride=1, padding=1)
 
@@ -153,57 +165,74 @@ class ReconGeneration(nn.Module):
         recon = self.recon_conv(feature)
         return feature, recon
 
-def get_hyper_codec(channel_in, channel_out):
+def get_hyper_codec(channel_in, channel_out, expand_ratio = 1):
     encoder = nn.Sequential(
-        nn.Conv2d(channel_in, channel_out, 3, stride=1, padding=1),
-        nn.LeakyReLU(),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
-        nn.LeakyReLU(),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
+        nn.Conv2d(channel_in, channel_out, 3, stride = 1, padding = 1),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+
+        nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding = 1),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+
+        nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding = 1),
     )
 
     decoder = nn.Sequential(
-        nn.ConvTranspose2d(channel_out, channel_out, 3,
-                            stride=2, padding=1, output_padding=1),
-        nn.LeakyReLU(),
-        nn.ConvTranspose2d(channel_out, channel_out * 3 // 2, 3,
-                            stride=2, padding=1, output_padding=1),
-        nn.LeakyReLU(),
-        nn.ConvTranspose2d(channel_out * 3 // 2, channel_in * 2, 3, stride=1, padding=1)
+        nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
+        InvertedResidual(channel_out,expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+
+        nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        
+        nn.ConvTranspose2d(channel_out, channel_in * 2, 3, stride = 1, padding = 1),
     )
 
     return encoder, decoder
 
-def get_codec(channel_in, channel_out):
+def get_codec(channel_in, channel_out, expand_ratio = 1):
     encoder = nn.Sequential(
-        nn.Conv2d(channel_in, channel_out, 3, stride=2, padding=1),
-        GDN(channel_out),
-        ResBlock(channel_out, start_from_relu=False),
-        nn.LeakyReLU(negative_slope=0.1),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
-        GDN(channel_out),
-        ResBlock(channel_out, start_from_relu=False),
-        nn.LeakyReLU(negative_slope=0.1),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
-        GDN(channel_out),
-        ResBlock(channel_out, start_from_relu=False),
-        nn.LeakyReLU(negative_slope=0.1),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
+        nn.Conv2d(channel_in, channel_out, 3, stride = 2, padding = 1),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+
+        nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding = 1),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+
+        nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding = 1),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+
+        nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding=1),
     )
 
     decoder = nn.Sequential(
-        nn.ConvTranspose2d(channel_out, channel_out, 3,
-                            stride=2, padding=1, output_padding=1),
-        nn.LeakyReLU(negative_slope=0.1),
-        ResBlock(channel_out, start_from_relu=False),
-        GDN(channel_out, inverse=True),
-        nn.ConvTranspose2d(channel_out, channel_out, 3,
-                            stride=2, padding=1, output_padding=1),
-        GDN(channel_out, inverse=True),
-        nn.ConvTranspose2d(channel_out, channel_out, 3,
-                            stride=2, padding=1, output_padding=1),
-        GDN(channel_out, inverse=True),
-        nn.ConvTranspose2d(channel_out, channel_in, 3, stride=2, padding=1, output_padding=1),
+        nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        
+        nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+
+        nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+
+        nn.ConvTranspose2d(channel_out, channel_in, 3, stride = 2, padding = 1, output_padding = 1),
     )
 
     return encoder, decoder
@@ -237,9 +266,9 @@ class EFVC(nn.Module):
 
         self.contextual_entropy_parameter = nn.Sequential(
             nn.Conv2d(self.channel_M * 12 // 3, self.channel_M * 10 // 3, 3, stride=1, padding=1),
-            nn.LeakyReLU(),
+            nn.GELU(),
             nn.Conv2d(self.channel_M * 10 // 3, self.channel_M * 8 // 3, 3, stride=1, padding=1),
-            nn.LeakyReLU(),
+            nn.GELU(),
             nn.Conv2d(self.channel_M * 8 // 3, self.channel_M * 6 // 3, 3, stride=1, padding=1),
         )
 

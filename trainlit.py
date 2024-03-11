@@ -258,7 +258,9 @@ class DCVC_TCM_Lit(L.LightningModule):
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
             nn.init.xavier_normal_(m.weight)
-            nn.init.constant_(m.bias, 0)
+
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     def _save_model(self, folder = "log/model_ckpt", name = None):
         if not os.path.exists(folder):
@@ -310,7 +312,7 @@ if __name__ == "__main__":
         # devices=2, strategy="ddp_find_unused_parameters_true",
         max_epochs = 60,
         logger = logger,
-        # fast_dev_run = True,
+        fast_dev_run = True,
     )
 
     if config["training"]["resume"]:
