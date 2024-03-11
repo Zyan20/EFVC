@@ -168,29 +168,21 @@ class ReconGeneration(nn.Module):
 def get_hyper_codec(channel_in, channel_out, expand_ratio = 1):
     encoder = nn.Sequential(
         nn.Conv2d(channel_in, channel_out, 3, stride = 1, padding = 1),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        ResAct(channel_out),
 
         nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding = 1),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        ResAct(channel_out),
 
         nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding = 1),
     )
 
     decoder = nn.Sequential(
         nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
-        InvertedResidual(channel_out,expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        ResAct(channel_out),
 
         nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        
+        ResAct(channel_out),
+
         nn.ConvTranspose2d(channel_out, channel_in * 2, 3, stride = 1, padding = 1),
     )
 
@@ -199,38 +191,26 @@ def get_hyper_codec(channel_in, channel_out, expand_ratio = 1):
 def get_codec(channel_in, channel_out, expand_ratio = 1):
     encoder = nn.Sequential(
         nn.Conv2d(channel_in, channel_out, 3, stride = 2, padding = 1),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        ResAct(channel_out),
 
         nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding = 1),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        ResAct(channel_out),
 
         nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding = 1),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        ResAct(channel_out),
 
         nn.Conv2d(channel_out, channel_out, 3, stride = 2, padding=1),
     )
 
     decoder = nn.Sequential(
         nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        ResAct(channel_out),
         
         nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        ResAct(channel_out),
 
         nn.ConvTranspose2d(channel_out, channel_out, 3, stride = 2, padding = 1, output_padding = 1),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
-        InvertedResidual(channel_out, expand_ratio = expand_ratio),
+        ResAct(channel_out),
 
         nn.ConvTranspose2d(channel_out, channel_in, 3, stride = 2, padding = 1, output_padding = 1),
     )
@@ -265,18 +245,15 @@ class EFVC(nn.Module):
         self.temporal_prior_encoder = TemporalPriorEncoder()
 
         self.contextual_entropy_parameter = nn.Sequential(
-            nn.Conv2d(self.channel_M * 12 // 3, self.channel_M * 10 // 3, 3, stride=1, padding=1),
-            nn.GELU(),
-            nn.Conv2d(self.channel_M * 10 // 3, self.channel_M * 8 // 3, 3, stride=1, padding=1),
-            nn.GELU(),
-            nn.Conv2d(self.channel_M * 8 // 3, self.channel_M * 6 // 3, 3, stride=1, padding=1),
+            InvertedResidual(self.channel_M * 4, self.channel_M * 4, expand_ratio = 1.5),
+            InvertedResidual(self.channel_M * 4, self.channel_M * 4, expand_ratio = 2),
+            nn.Conv2d(self.channel_M * 4, self.channel_M * 2, 3, stride = 1, padding = 1),
         )
 
         self.contextual_decoder = ContextualDecoder()
 
         self.recon_generation_net = ReconGeneration()
 
-        
         self.entropy_coder = None
         self.bit_estimator_z = EntropyBottleneck(self.channel_N)
         self.bit_estimator_z_mv = EntropyBottleneck(self.channel_N)
@@ -353,6 +330,7 @@ class EFVC(nn.Module):
             "recon_image": recon_image,
             "feature": feature,
             "warpped_image": warp_frame,
+
 
             "y": y,
             "z": z,
