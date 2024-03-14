@@ -16,6 +16,8 @@ from util.dataset.Vimeo90K import Vimeo90K
 
 
 class DCVC_TCM_Lit(L.LightningModule):
+    WEIGHT = [0.7, 0.9, 1.1, 1.3]
+
     def __init__(self, cfg):
         super().__init__()
         self.automatic_optimization = False
@@ -67,7 +69,7 @@ class DCVC_TCM_Lit(L.LightningModule):
             input_frame = batch[:, i,...].to(self.device)
             out = self.model(input_frame, ref_frame, feature)
 
-            loss += self._get_loss(input_frame, out, self.train_lambda)
+            loss += self._get_loss(input_frame, out, self.train_lambda, i - 1)
 
             # take recon image as ref image
             ref_frame = out["recon_image"]
@@ -114,7 +116,7 @@ class DCVC_TCM_Lit(L.LightningModule):
             self.sum_count = 0
 
 
-    def _get_loss(self, input, output, frame_lambda):
+    def _get_loss(self, input, output, frame_lambda, frame_idx):
         dist_me = F.mse_loss(input, output["warpped_image"])
         dist_recon = F.mse_loss(input, output["recon_image"])
 
@@ -140,7 +142,12 @@ class DCVC_TCM_Lit(L.LightningModule):
             dist = dist_recon
             rate = output["bpp"]
 
-        return frame_lambda * dist + rate
+        if self.multi_frame_training:
+            return self.WEIGHT[frame_idx] * frame_lambda * dist + rate
+
+        else:
+            return frame_lambda * dist + rate
+
 
 
     def configure_optimizers(self):
@@ -310,7 +317,7 @@ if __name__ == "__main__":
         # devices=2, strategy="ddp_find_unused_parameters_true",
         max_epochs = 60,
         logger = logger,
-        # fast_dev_run = True,
+        fast_dev_run = True,
     )
 
     if config["training"]["resume"]:

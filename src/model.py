@@ -2,9 +2,10 @@ import math
 import torch
 from torch import mv, nn
 from .sub_net.video_net import ME_Spynet, GDN, flow_warp, ResBlock, bilineardownsacling
-from compressai.layers import subpel_conv3x3
+from compressai.layers import subpel_conv3x3, AttentionBlock
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 
+from .layers.transforms import make_res_units, make_conv, make_deconv
 
 class FeatureExtractor(nn.Module):
     def __init__(self, channel=64):
@@ -64,15 +65,15 @@ class ContextualEncoder(nn.Module):
     def __init__(self, channel_N=64, channel_M=96):
         super().__init__()
         self.conv1 = nn.Conv2d(channel_N + 3, channel_N, 3, stride=2, padding=1)
-        self.gdn1 = GDN(channel_N)
+        self.gdn1 = make_res_units(channel_N)
         self.res1 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
         self.conv2 = nn.Conv2d(channel_N * 2, channel_N, 3, stride=2, padding=1)
-        self.gdn2 = GDN(channel_N)
+        self.gdn2 = make_res_units(channel_N)
         self.res2 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
         self.conv3 = nn.Conv2d(channel_N * 2, channel_N, 3, stride=2, padding=1)
-        self.gdn3 = GDN(channel_N)
+        self.gdn3 = make_res_units(channel_N)
         self.conv4 = nn.Conv2d(channel_N, channel_M, 3, stride=2, padding=1)
 
     def forward(self, x, context1, context2, context3):
@@ -92,13 +93,13 @@ class ContextualDecoder(nn.Module):
     def __init__(self, channel_N=64, channel_M=96):
         super().__init__()
         self.up1 = subpel_conv3x3(channel_M, channel_N, 2)
-        self.gdn1 = GDN(channel_N, inverse=True)
+        self.gdn1 = make_res_units(channel_N)
         self.up2 = subpel_conv3x3(channel_N, channel_N, 2)
-        self.gdn2 = GDN(channel_N, inverse=True)
+        self.gdn2 = make_res_units(channel_N)
         self.res1 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
         self.up3 = subpel_conv3x3(channel_N * 2, channel_N, 2)
-        self.gdn3 = GDN(channel_N, inverse=True)
+        self.gdn3 = make_res_units(channel_N)
         self.res2 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
         self.up4 = subpel_conv3x3(channel_N * 2, 32, 2)
@@ -120,11 +121,11 @@ class TemporalPriorEncoder(nn.Module):
     def __init__(self, channel_N=64, channel_M=96):
         super().__init__()
         self.conv1 = nn.Conv2d(channel_N, channel_N, 3, stride=2, padding=1)
-        self.gdn1 = GDN(channel_N)
+        self.gdn1 = make_res_units(channel_N)
         self.conv2 = nn.Conv2d(channel_N * 2, channel_M, 3, stride=2, padding=1)
-        self.gdn2 = GDN(channel_M)
+        self.gdn2 = make_res_units(channel_M)
         self.conv3 = nn.Conv2d(channel_M + channel_N, channel_M * 3 // 2, 3, stride=2, padding=1)
-        self.gdn3 = GDN(channel_M * 3 // 2)
+        self.gdn3 = make_res_units(channel_M * 3 // 2)
         self.conv4 = nn.Conv2d(channel_M * 3 // 2, channel_M * 2, 3, stride=2, padding=1)
 
     def forward(self, context1, context2, context3):
@@ -155,55 +156,52 @@ class ReconGeneration(nn.Module):
 
 def get_hyper_codec(channel_in, channel_out):
     encoder = nn.Sequential(
-        nn.Conv2d(channel_in, channel_out, 3, stride=1, padding=1),
+        make_conv(channel_in, channel_out, 3, stride = 1), 
         nn.LeakyReLU(),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
+        make_conv(channel_out, channel_out, 3, stride = 2), 
         nn.LeakyReLU(),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
+        make_conv(channel_out, channel_out, 3, stride = 2)
     )
 
     decoder = nn.Sequential(
-        nn.ConvTranspose2d(channel_out, channel_out, 3,
-                            stride=2, padding=1, output_padding=1),
+        make_deconv(channel_out, channel_out, 3, 2),
         nn.LeakyReLU(),
-        nn.ConvTranspose2d(channel_out, channel_out * 3 // 2, 3,
-                            stride=2, padding=1, output_padding=1),
+        make_deconv(channel_out, channel_out * 3 // 2, 3, 2),
         nn.LeakyReLU(),
-        nn.ConvTranspose2d(channel_out * 3 // 2, channel_in * 2, 3, stride=1, padding=1)
+        make_deconv(channel_out * 3 // 2, channel_in * 2, 3, 1)
     )
 
     return encoder, decoder
 
-def get_codec(channel_in, channel_out):
+def get_codec(channel_in , channel_out):
     encoder = nn.Sequential(
-        nn.Conv2d(channel_in, channel_out, 3, stride=2, padding=1),
-        GDN(channel_out),
-        ResBlock(channel_out, start_from_relu=False),
-        nn.LeakyReLU(negative_slope=0.1),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
-        GDN(channel_out),
-        ResBlock(channel_out, start_from_relu=False),
-        nn.LeakyReLU(negative_slope=0.1),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
-        GDN(channel_out),
-        ResBlock(channel_out, start_from_relu=False),
-        nn.LeakyReLU(negative_slope=0.1),
-        nn.Conv2d(channel_out, channel_out, 3, stride=2, padding=1),
+        make_conv(channel_in, channel_out, 3, 2),
+        make_res_units(channel_out),
+
+        make_conv(channel_out, channel_out, 3, 2),
+        make_res_units(channel_out),
+        AttentionBlock(channel_out),
+
+        make_conv(channel_out, channel_out, 3, 2),
+        make_res_units(channel_out),
+
+        make_conv(channel_out, channel_out, 3, 2),
+        AttentionBlock(channel_out)
     )
 
     decoder = nn.Sequential(
-        nn.ConvTranspose2d(channel_out, channel_out, 3,
-                            stride=2, padding=1, output_padding=1),
-        nn.LeakyReLU(negative_slope=0.1),
-        ResBlock(channel_out, start_from_relu=False),
-        GDN(channel_out, inverse=True),
-        nn.ConvTranspose2d(channel_out, channel_out, 3,
-                            stride=2, padding=1, output_padding=1),
-        GDN(channel_out, inverse=True),
-        nn.ConvTranspose2d(channel_out, channel_out, 3,
-                            stride=2, padding=1, output_padding=1),
-        GDN(channel_out, inverse=True),
-        nn.ConvTranspose2d(channel_out, channel_in, 3, stride=2, padding=1, output_padding=1),
+        AttentionBlock(channel_out),
+        make_deconv(channel_out, channel_out, 3, 2), 
+        make_res_units(channel_out),
+
+        make_deconv(channel_out, channel_out, 3, 2), 
+        AttentionBlock(channel_out),
+        make_res_units(channel_out),
+
+        make_deconv(channel_out, channel_out, 3, 2), 
+        make_res_units(channel_out),
+        
+        make_deconv(channel_out, channel_in, 3, 2)
     )
 
     return encoder, decoder
