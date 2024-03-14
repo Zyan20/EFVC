@@ -165,7 +165,7 @@ class ReconGeneration(nn.Module):
         recon = self.recon_conv(feature)
         return feature, recon
 
-def get_hyper_codec(channel_in, channel_out, expand_ratio = 1):
+def get_hyper_codec(channel_in, channel_out):
     encoder = nn.Sequential(
         nn.Conv2d(channel_in, channel_out, 3, stride = 1, padding = 1),
         ResAct(channel_out),
@@ -188,7 +188,7 @@ def get_hyper_codec(channel_in, channel_out, expand_ratio = 1):
 
     return encoder, decoder
 
-def get_codec(channel_in, channel_out, expand_ratio = 1):
+def get_codec(channel_in, channel_out):
     encoder = nn.Sequential(
         nn.Conv2d(channel_in, channel_out, 3, stride = 2, padding = 1),
         ResAct(channel_out),
@@ -239,14 +239,13 @@ class EFVC(nn.Module):
 
         self.contextual_encoder = ContextualEncoder()
 
-
         self.contextual_hyper_prior_encoder, self.contextual_hyper_prior_decoder = get_hyper_codec(self.channel_M, self.channel_N)
 
         self.temporal_prior_encoder = TemporalPriorEncoder()
 
         self.contextual_entropy_parameter = nn.Sequential(
-            InvertedResidual(self.channel_M * 4, self.channel_M * 4, expand_ratio = 1.5),
-            InvertedResidual(self.channel_M * 4, self.channel_M * 4, expand_ratio = 2),
+            InvertedResidual(self.channel_M * 4, expand_ratio = 1.5),
+            InvertedResidual(self.channel_M * 4, expand_ratio = 2),
             nn.Conv2d(self.channel_M * 4, self.channel_M * 2, 3, stride = 1, padding = 1),
         )
 
@@ -279,7 +278,11 @@ class EFVC(nn.Module):
         return context1, context2, context3, warpframe
     
     def _calc_bpp(self, likelihoods, num_pixels):
-        return torch.sum(torch.clamp(-1.0 * torch.log(likelihoods + 1e-5) / math.log(2.0), 0, 50)) / num_pixels
+        if self.training:
+            return torch.sum(torch.clamp(-1.0 * torch.log(likelihoods + 1e-5) / math.log(2.0), 0, 50)) / num_pixels
+
+        else:
+            return torch.sum(-1.0 * torch.log(likelihoods) / math.log(2.0)) / num_pixels
 
     def forward(self, input_frame, ref_frame, ref_feature):
         est_mv = self.optic_flow(input_frame, ref_frame)
