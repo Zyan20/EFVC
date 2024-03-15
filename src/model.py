@@ -5,7 +5,7 @@ from .sub_net.video_net import ME_Spynet, GDN, flow_warp, ResBlock, bilineardown
 from compressai.layers import subpel_conv3x3, AttentionBlock
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 
-from .layers.transforms import make_res_units, make_conv, make_deconv
+from .layers.transforms import make_res_units, make_conv, make_deconv, CondConv
 
 class FeatureExtractor(nn.Module):
     def __init__(self, channel=64):
@@ -64,56 +64,87 @@ class MultiScaleContextFusion(nn.Module):
 class ContextualEncoder(nn.Module):
     def __init__(self, channel_N=64, channel_M=96):
         super().__init__()
-        self.conv1 = nn.Conv2d(channel_N + 3, channel_N, 3, stride=2, padding=1)
+        self.conv1 = CondConv(
+            nn.Conv2d(channel_N + 3, channel_N, 3, stride=2, padding=1),
+        )
+
         self.gdn1 = make_res_units(channel_N)
         self.res1 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
-        self.conv2 = nn.Conv2d(channel_N * 2, channel_N, 3, stride=2, padding=1)
+        
+        self.conv2 = CondConv(
+            nn.Conv2d(channel_N * 2, channel_N, 3, stride=2, padding=1)
+        )
+        
         self.gdn2 = make_res_units(channel_N)
         self.res2 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
-        self.conv3 = nn.Conv2d(channel_N * 2, channel_N, 3, stride=2, padding=1)
+        
+        self.conv3 = CondConv(
+            nn.Conv2d(channel_N * 2, channel_N, 3, stride=2, padding=1)
+        )
         self.gdn3 = make_res_units(channel_N)
-        self.conv4 = nn.Conv2d(channel_N, channel_M, 3, stride=2, padding=1)
 
-    def forward(self, x, context1, context2, context3):
-        feature = self.conv1(torch.cat([x, context1], dim=1))
+        self.conv4 = CondConv(
+            nn.Conv2d(channel_N, channel_M, 3, stride=2, padding=1)
+        )
+
+    def forward(self, x, context1, context2, context3, q_index):
+        feature = self.conv1(torch.cat([x, context1], dim=1), q_index)
         feature = self.gdn1(feature)
         feature = self.res1(torch.cat([feature, context2], dim=1))
-        feature = self.conv2(feature)
+
+        feature = self.conv2(feature, q_index)
         feature = self.gdn2(feature)
         feature = self.res2(torch.cat([feature, context3], dim=1))
-        feature = self.conv3(feature)
+
+        feature = self.conv3(feature, q_index)
         feature = self.gdn3(feature)
-        feature = self.conv4(feature)
+
+        feature = self.conv4(feature, q_index)
         return feature
 
 
 class ContextualDecoder(nn.Module):
     def __init__(self, channel_N=64, channel_M=96):
         super().__init__()
-        self.up1 = subpel_conv3x3(channel_M, channel_N, 2)
+        self.up1 = CondConv(
+            subpel_conv3x3(channel_M, channel_N, 2), out_channels = channel_N
+        )
         self.gdn1 = make_res_units(channel_N)
-        self.up2 = subpel_conv3x3(channel_N, channel_N, 2)
+
+        self.up2 = CondConv(
+            subpel_conv3x3(channel_N, channel_N, 2), out_channels = channel_N
+        )
         self.gdn2 = make_res_units(channel_N)
         self.res1 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
-        self.up3 = subpel_conv3x3(channel_N * 2, channel_N, 2)
+        
+        self.up3 = CondConv(
+            subpel_conv3x3(channel_N * 2, channel_N, 2), out_channels = channel_N
+        )
         self.gdn3 = make_res_units(channel_N)
         self.res2 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
-        self.up4 = subpel_conv3x3(channel_N * 2, 32, 2)
+        
+        self.up4 = CondConv(
+            subpel_conv3x3(channel_N * 2, 32, 2), out_channels = 32
+        )
 
-    def forward(self, x, context2, context3):
-        feature = self.up1(x)
+
+    def forward(self, x, context2, context3, q_index):
+        feature = self.up1(x, q_index)
         feature = self.gdn1(feature)
-        feature = self.up2(feature)
+
+        feature = self.up2(feature, q_index)
         feature = self.gdn2(feature)
         feature = self.res1(torch.cat([feature, context3], dim=1))
-        feature = self.up3(feature)
+
+        feature = self.up3(feature, q_index)
         feature = self.gdn3(feature)
         feature = self.res2(torch.cat([feature, context2], dim=1))
-        feature = self.up4(feature)
+
+        feature = self.up4(feature, q_index)
         return feature
 
 
@@ -273,7 +304,7 @@ class EFVC(nn.Module):
     def _calc_bpp(self, likelihoods, num_pixels):
         return torch.sum(torch.clamp(-1.0 * torch.log(likelihoods + 1e-5) / math.log(2.0), 0, 50)) / num_pixels
 
-    def forward(self, input_frame, ref_frame, ref_feature):
+    def forward(self, input_frame, ref_frame, ref_feature, q_index):
         est_mv = self.optic_flow(input_frame, ref_frame)
         mv_y = self.mv_encoder(est_mv)
         mv_z = self.mv_prior_encoder(mv_y)
@@ -287,7 +318,7 @@ class EFVC(nn.Module):
         context1, context2, context3, warp_frame = self.motion_compensation(
             ref_frame, ref_feature, mv_hat)
 
-        y = self.contextual_encoder(input_frame, context1, context2, context3)
+        y = self.contextual_encoder(input_frame, context1, context2, context3, q_index)
         z = self.contextual_hyper_prior_encoder(y)
 
         z_hat, z_likelihood = self.bit_estimator_z(z)
@@ -300,7 +331,7 @@ class EFVC(nn.Module):
         scales_hat, means_hat = gaussian_params.chunk(2, 1)
         y_hat, y_likelihood = self.gaussian_encoder(y, scales = scales_hat, means = means_hat)
 
-        recon_image_feature = self.contextual_decoder(y_hat, context2, context3)
+        recon_image_feature = self.contextual_decoder(y_hat, context2, context3, q_index)
         feature, recon_image = self.recon_generation_net(recon_image_feature, context1)
 
         im_shape = input_frame.size()

@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 def make_conv(
     in_channels: int,
@@ -52,6 +53,39 @@ class ResidualUnit(nn.Module):
         out += identity
         out = self.activation(out)
         return out
+
+
+class CondConv(nn.Module):
+    def __init__(self, 
+        conv: nn.Module, out_channels = None,
+        q_nums = 64, q_embed_dim = 64,
+    ) -> None:
+        super().__init__()
+
+        if out_channels is None:
+            out_channels = conv.weight.shape[0]
+        self.out_channels = out_channels
+
+        self.conv = conv
+
+        self.embed = nn.Embedding(q_nums, q_embed_dim)
+        self.scale = nn.Linear(q_embed_dim, out_channels)
+        self.shift = nn.Linear(q_embed_dim, out_channels)
+
+    def forward(self, x, q_index):
+        x = self.conv(x)
+
+        B = x.shape[0]
+        q_index_tensor = torch.tensor([[q_index]]).to(x.device)
+        q_index_tensor = q_index_tensor.repeat_interleave(B, dim = 0)
+
+        embeded_q = self.embed(q_index_tensor)
+        scale = F.softplus(self.scale(embeded_q)).reshape(B, self.out_channels, 1, 1)
+        shift = self.shift(embeded_q).reshape(B, self.out_channels, 1, 1)
+
+        x = scale * x + shift
+
+        return x
 
 
 def make_res_units(channels, layers = 3) -> nn.Sequential:

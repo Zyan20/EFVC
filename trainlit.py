@@ -1,7 +1,5 @@
-import sys
+import sys, yaml, os, math, random
 sys.path.append("../")
-
-import yaml, os, math
 
 import torch
 from torch import nn, optim
@@ -16,7 +14,9 @@ from util.dataset.Vimeo90K import Vimeo90K
 
 
 class DCVC_TCM_Lit(L.LightningModule):
-    WEIGHT = [0.7, 0.9, 1.1, 1.3]
+    WEIGHT = [1, 1.2, 1.4, 1.6]
+    Q_NUMS = 64
+    LAMBDAS= [80, 1024]
 
     def __init__(self, cfg):
         super().__init__()
@@ -58,18 +58,20 @@ class DCVC_TCM_Lit(L.LightningModule):
             "loss": 0,
         }
 
+
     def training_step(self, batch: torch.Tensor, idx):
         B, T, C, H, W = batch.shape
 
         loss = 0
         feature = None
         ref_frame = batch[:, 0, ...].to(self.device)
+        q_index = random.randint(0, self.Q_NUMS - 1)
 
         for i in range(1, T):
             input_frame = batch[:, i,...].to(self.device)
-            out = self.model(input_frame, ref_frame, feature)
+            out = self.model(input_frame, ref_frame, feature, q_index)
 
-            loss += self._get_loss(input_frame, out, self.train_lambda, i - 1)
+            loss += self._get_loss(input_frame, out, q_index, i - 1)
 
             # take recon image as ref image
             ref_frame = out["recon_image"]
@@ -116,7 +118,9 @@ class DCVC_TCM_Lit(L.LightningModule):
             self.sum_count = 0
 
 
-    def _get_loss(self, input, output, frame_lambda, frame_idx):
+    def _get_loss(self, input, output, q_index, frame_idx):
+        frame_lambda = self._get_lambda(q_index)
+
         dist_me = F.mse_loss(input, output["warpped_image"])
         dist_recon = F.mse_loss(input, output["recon_image"])
 
@@ -204,6 +208,8 @@ class DCVC_TCM_Lit(L.LightningModule):
                 folder = "log/model_ckpt"
             )
 
+    def _get_lambda(self, q_index):
+        return self.LAMBDAS[0] * (self.LAMBDAS[1] / self.LAMBDAS[0]) ** (q_index / (self.Q_NUMS - 1))
 
     def _training_stage(self):
         self.stage = 0
@@ -224,6 +230,59 @@ class DCVC_TCM_Lit(L.LightningModule):
 
         elif self.stage == 3:
             self._train_all()
+
+    def validation_step(self, batch, batch_idx):
+        B, T, C, H, W = batch.shape
+
+        loss = 0
+        feature = None
+        ref_frame = batch[:, 0, ...].to(self.device)
+        val_sum_out  = {
+            "val_bpp_mv_y": 0,
+            "val_bpp_mv_z": 0,
+            "val_bpp_y": 0,
+            "val_bpp_z": 0,
+            "val_bpp": 0,
+
+            "val_ME_MSE": 0,
+            "val_ME_PSNR": 0,
+
+            "val_MSE": 0,
+            "val_PSNR": 0,
+
+            "val_loss": 0,
+        }
+        
+        for i in range(1, T):
+            input_frame = batch[:, i,...].to(self.device)
+            out = self.model(input_frame, ref_frame, feature, 63)
+
+            loss += self._get_loss(input_frame, out, 63, i - 1)
+            
+            # ref
+            ref_frame = out["recon_image"]
+            feature = out["feature"]
+
+            # val log
+            val_sum_out["val_bpp_mv_y"] += out["bpp_mv_y"].item()
+            val_sum_out["val_bpp_mv_z"] += out["bpp_mv_z"].item()
+            val_sum_out["val_bpp_y"]    += out["bpp_y"].item()
+            val_sum_out["val_bpp_z"]    += out["bpp_z"].item()
+            val_sum_out["val_bpp"]      += out["bpp"].item()
+
+            val_sum_out["val_MSE"]      += out["MSE"]
+            val_sum_out["val_PSNR"]     += out["PSNR"]
+            val_sum_out["val_ME_MSE"]   += out["ME_MSE"]
+            val_sum_out["val_ME_PSNR"]  += out["ME_PSNR"]
+            val_sum_out["val_loss"]     += loss.item()
+        
+
+        for key in val_sum_out.keys():
+            val_sum_out[key] /= (T - 1)
+        
+        # print(val_sum_out)
+
+        self.log_dict(val_sum_out, on_epoch = True)
 
 
     def _parse_cfg(self):
@@ -302,6 +361,7 @@ if __name__ == "__main__":
         interval = 2
         batch_size = config["training"]["batch_size"]
 
+    # train dataset
     train_dataset = Vimeo90K(
         root = config["datasets"]["vimeo90k"]["root"], 
         split_file= config["datasets"]["vimeo90k"]["split_file"],
@@ -309,21 +369,37 @@ if __name__ == "__main__":
     )
     train_dataloader = DataLoader(
         train_dataset, batch_size = batch_size, shuffle = True, 
-        num_workers = 1, persistent_workers=True, pin_memory = True
+        num_workers = 4, persistent_workers=True, pin_memory = True
     )
 
+    # val dataset
+    val_dataset = Vimeo90K(
+        root = config["datasets"]["vimeo90k"]["root"], 
+        split_file= "sep_testlist.txt",
+        frame_num = frame_num, interval = interval, rnd_frame_group = True
+    )
+    val_dataloader = DataLoader(
+        val_dataset, batch_size = batch_size, num_workers = 4
+    )
+
+    # logger
     logger = TensorBoardLogger(save_dir = "log", name = config["name"])
+    
+    # trainer
     trainer = L.Trainer(
-        # devices=2, strategy="ddp_find_unused_parameters_true",
+        # strategy="ddp_find_unused_parameters_true",
         max_epochs = 60,
         logger = logger,
-        fast_dev_run = True,
+        # fast_dev_run = True,
+
+        limit_val_batches = 0.1
     )
 
     if config["training"]["resume"]:
         trainer.fit(
             model = model_module,
             train_dataloaders = train_dataloader,
+            val_dataloaders = val_dataloader,
             ckpt_path = config["training"]["ckpt"]
         )
     
@@ -331,5 +407,6 @@ if __name__ == "__main__":
         trainer.fit(
             model = model_module,
             train_dataloaders = train_dataloader,
+            val_dataloaders = val_dataloader,
         )
 
