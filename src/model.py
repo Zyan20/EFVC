@@ -204,38 +204,92 @@ def get_hyper_codec(channel_in, channel_out):
 
     return encoder, decoder
 
-def get_codec(channel_in , channel_out):
-    encoder = nn.Sequential(
-        make_conv(channel_in, channel_out, 3, 2),
-        make_res_units(channel_out),
 
-        make_conv(channel_out, channel_out, 3, 2),
-        make_res_units(channel_out),
-        AttentionBlock(channel_out),
+class MVEncoder(nn.Module):
+    def __init__(self, channel_out):
+        super().__init__()
 
-        make_conv(channel_out, channel_out, 3, 2),
-        make_res_units(channel_out),
+        self.downs = nn.ModuleList([
+            CondConv(make_conv(2, channel_out, 3, 2)),
+            CondConv(make_conv(channel_out, channel_out, 3, 2)),
+            CondConv(make_conv(channel_out, channel_out, 3, 2)),
+            CondConv(make_conv(channel_out, channel_out, 3, 2)),
+        ])
 
-        make_conv(channel_out, channel_out, 3, 2),
-        AttentionBlock(channel_out)
-    )
+        self.norms = nn.ModuleList([
+            make_res_units(channel_out),
+            make_res_units(channel_out),
+            make_res_units(channel_out),
+        ])
 
-    decoder = nn.Sequential(
-        AttentionBlock(channel_out),
-        make_deconv(channel_out, channel_out, 3, 2), 
-        make_res_units(channel_out),
-
-        make_deconv(channel_out, channel_out, 3, 2), 
-        AttentionBlock(channel_out),
-        make_res_units(channel_out),
-
-        make_deconv(channel_out, channel_out, 3, 2), 
-        make_res_units(channel_out),
+    def forward(self, x, q_index):
+        for i in range(3):
+            x = self.downs[i](x, q_index)
+            x = self.norms[i](x)
         
-        make_deconv(channel_out, channel_in, 3, 2)
-    )
+        x = self.downs[3](x, q_index)
 
-    return encoder, decoder
+        return x
+
+
+class MVDecoder(nn.Module):
+    def __init__(self, channel_out):
+        super().__init__()
+
+        self.ups = nn.ModuleList([
+            CondConv(make_deconv(channel_out, channel_out, 3, 2), channel_out),
+            CondConv(make_deconv(channel_out, channel_out, 3, 2), channel_out),
+            CondConv(make_deconv(channel_out, channel_out, 3, 2), channel_out),
+            CondConv(make_deconv(channel_out, 2, 3, 2), 2),
+        ])
+
+        self.norms = nn.ModuleList([
+            make_res_units(channel_out),
+            make_res_units(channel_out),
+            make_res_units(channel_out),
+        ])
+
+    def forward(self, x, q_index):
+        for i in range(3):
+            x = self.ups[i](x, q_index)
+            x = self.norms[i](x)
+
+        x = self.ups[3](x, q_index)
+
+        return x
+
+# def get_codec(channel_in , channel_out):
+#     encoder = nn.Sequential(
+#         make_conv(channel_in, channel_out, 3, 2),
+#         make_res_units(channel_out),
+
+#         make_conv(channel_out, channel_out, 3, 2),
+#         make_res_units(channel_out),
+#         AttentionBlock(channel_out),
+
+#         make_conv(channel_out, channel_out, 3, 2),
+#         make_res_units(channel_out),
+
+#         make_conv(channel_out, channel_out, 3, 2),
+#         AttentionBlock(channel_out)
+#     )
+
+#     decoder = nn.Sequential(
+#         AttentionBlock(channel_out),
+#         make_deconv(channel_out, channel_out, 3, 2), 
+#         make_res_units(channel_out),
+
+#         make_deconv(channel_out, channel_out, 3, 2), 
+#         AttentionBlock(channel_out),
+#         make_res_units(channel_out),
+
+#         make_deconv(channel_out, channel_out, 3, 2), 
+#         make_res_units(channel_out),
+        
+#         make_deconv(channel_out, channel_in, 3, 2)
+#     )
+
+#     return encoder, decoder
 
 
 class EFVC(nn.Module):
@@ -248,9 +302,10 @@ class EFVC(nn.Module):
 
         self.optic_flow = ME_Spynet()
 
-        self.mv_encoder, self.mv_decoder = get_codec(2, self.channel_mv)
-        self.mv_prior_encoder, self.mv_prior_decoder = get_hyper_codec(self.channel_mv, self.channel_N)
+        self.mv_encoder = MVEncoder(self.channel_mv)
+        self.mv_decoder = MVDecoder(self.channel_mv)
 
+        self.mv_prior_encoder, self.mv_prior_decoder = get_hyper_codec(self.channel_mv, self.channel_N)
 
         self.feature_adaptor_I = nn.Conv2d(3, self.channel_N, 3, stride=1, padding=1)
         self.feature_adaptor_P = nn.Conv2d(self.channel_N, self.channel_N, 1)
@@ -306,14 +361,14 @@ class EFVC(nn.Module):
 
     def forward(self, input_frame, ref_frame, ref_feature, q_index):
         est_mv = self.optic_flow(input_frame, ref_frame)
-        mv_y = self.mv_encoder(est_mv)
+        mv_y = self.mv_encoder(est_mv, q_index)
         mv_z = self.mv_prior_encoder(mv_y)
         mv_z_hat, mv_z_likelihood = self.bit_estimator_z_mv(mv_z)
         mv_params = self.mv_prior_decoder(mv_z_hat)
         mv_scales_hat, mv_means_hat = mv_params.chunk(2, 1)
 
         mv_y_hat, mv_y_likelihood = self.gaussian_encoder(mv_y, scales = mv_scales_hat, means = mv_means_hat)
-        mv_hat = self.mv_decoder(mv_y_hat)
+        mv_hat = self.mv_decoder(mv_y_hat, q_index)
 
         context1, context2, context3, warp_frame = self.motion_compensation(
             ref_frame, ref_feature, mv_hat)
