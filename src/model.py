@@ -109,26 +109,26 @@ class ContextualDecoder(nn.Module):
     def __init__(self, channel_N=64, channel_M=96):
         super().__init__()
         self.up1 = CondConv(
-            subpel_conv3x3(channel_M, channel_N, 2), out_channels = channel_N
+            subpel_conv3x3(channel_M, channel_N, 2), out_channels = channel_M, reverse = True
         )
         self.gdn1 = make_res_units(channel_N)
 
         self.up2 = CondConv(
-            subpel_conv3x3(channel_N, channel_N, 2), out_channels = channel_N
+            subpel_conv3x3(channel_N, channel_N, 2), out_channels = channel_N, reverse = True
         )
         self.gdn2 = make_res_units(channel_N)
         self.res1 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
         
         self.up3 = CondConv(
-            subpel_conv3x3(channel_N * 2, channel_N, 2), out_channels = channel_N
+            subpel_conv3x3(channel_N * 2, channel_N, 2), out_channels = channel_N * 2, reverse = True
         )
         self.gdn3 = make_res_units(channel_N)
         self.res2 = ResBlock(channel_N * 2, bottleneck=True, slope=0.1,
                              start_from_relu=False, end_with_relu=True)
         
         self.up4 = CondConv(
-            subpel_conv3x3(channel_N * 2, 32, 2), out_channels = 32
+            subpel_conv3x3(channel_N * 2, 32, 2), out_channels = channel_N * 2, reverse = True
         )
 
 
@@ -237,10 +237,10 @@ class MVDecoder(nn.Module):
         super().__init__()
 
         self.ups = nn.ModuleList([
-            CondConv(make_deconv(channel_out, channel_out, 3, 2), channel_out),
-            CondConv(make_deconv(channel_out, channel_out, 3, 2), channel_out),
-            CondConv(make_deconv(channel_out, channel_out, 3, 2), channel_out),
-            CondConv(make_deconv(channel_out, 2, 3, 2), 2),
+            CondConv(make_deconv(channel_out, channel_out, 3, 2), reverse = True),
+            CondConv(make_deconv(channel_out, channel_out, 3, 2), reverse = True),
+            CondConv(make_deconv(channel_out, channel_out, 3, 2), reverse = True),
+            CondConv(make_deconv(channel_out, 2, 3, 2),  reverse = True)
         ])
 
         self.norms = nn.ModuleList([

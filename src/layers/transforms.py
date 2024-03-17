@@ -58,46 +58,46 @@ class ResidualUnit(nn.Module):
 class CondConv(nn.Module):
     def __init__(self, 
         conv: nn.Module, out_channels = None,
-        q_nums = 64
+        q_nums = 64, reverse = False
     ) -> None:
         super().__init__()
 
         if out_channels is None:
             out_channels = conv.weight.shape[0]
+
         self.out_channels = out_channels
 
         self.conv = conv
         self.q_nums = q_nums
+        self.reverse = reverse
 
-        # self.embed = nn.Embedding(q_nums, q_embed_dim)
         self.scale = nn.Sequential(
-            nn.Linear(q_nums, out_channels // 3),
+            nn.Linear(q_nums, out_channels),
             nn.LeakyReLU(inplace = True),
-            nn.Linear(out_channels // 3, int(out_channels // 2)),
-            nn.LeakyReLU(inplace = True),
-            nn.Linear(out_channels // 2, out_channels),
+            nn.Linear(out_channels, int(out_channels)),
         )
-        self.shift = nn.Sequential(
-            nn.Linear(q_nums, out_channels // 3),
-            nn.LeakyReLU(inplace = True),
-            nn.Linear(out_channels // 3, out_channels // 2),
-            nn.LeakyReLU(inplace = True),
-            nn.Linear(out_channels // 2, out_channels),
-        )
+        # self.shift = nn.Sequential(
+        #     nn.Linear(q_nums, out_channels),
+        #     nn.LeakyReLU(inplace = True),
+        #     nn.Linear(out_channels, out_channels),
+        # )
 
     def forward(self, x, q_index):
-        x = self.conv(x)
-
         B = x.shape[0]
         q_index_tensor = torch.tensor([[q_index]]).to(x.device)
-        embeded_q = F.one_hot(q_index_tensor, self.q_nums).float()
-        
-        scale = F.softplus(self.scale(embeded_q)).view(1, self.out_channels, 1, 1).expand(B, self.out_channels, 1, 1)
-        shift = self.shift(embeded_q).view(1, self.out_channels, 1, 1).expand(B, self.out_channels, 1, 1)
+        embeded_q = F.one_hot(q_index_tensor, self.q_nums).float().expand(B, 1, self.q_nums)    # [B, 1, q_embed_dim]
+        scale = F.softplus(self.scale(embeded_q)).view(B, self.out_channels, 1, 1)
 
-        x = scale * x + shift
+        if self.reverse:
+            x = scale * x
+            x = self.conv(x)
+
+        else:
+            x = self.conv(x)
+            x = scale * x
 
         return x
+
     
 
 
